@@ -5,6 +5,7 @@ import path from 'path';
 import { Api, Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { transcribeAudioMessage } from '../transcription.js';
 import { readEnvFile } from '../env.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
@@ -309,9 +310,47 @@ export class TelegramChannel implements Channel {
       });
     });
     this.bot.on('message:voice', (ctx) => {
-      storeMedia(ctx, '[Voice message]', {
-        fileId: ctx.message.voice?.file_id,
-        filename: `voice_${ctx.message.message_id}`,
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const fileId = ctx.message.voice?.file_id;
+      const msgId = ctx.message.message_id;
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const senderName =
+        ctx.from?.first_name || ctx.from?.username || ctx.from?.id?.toString() || 'Unknown';
+      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+
+      const deliver = (content: string) => {
+        this.opts.onMessage(chatJid, {
+          id: msgId.toString(),
+          chat_jid: chatJid,
+          sender: ctx.from?.id?.toString() || '',
+          sender_name: senderName,
+          content,
+          timestamp,
+          is_from_me: false,
+        });
+      };
+
+      if (!fileId) {
+        deliver('[Voice message]');
+        return;
+      }
+
+      this.downloadFile(fileId, group.folder, `voice_${msgId}`).then(async (containerPath) => {
+        if (!containerPath) {
+          deliver('[Voice message - transcription unavailable]');
+          return;
+        }
+        const localPath = path.join(
+          resolveGroupFolderPath(group.folder),
+          'attachments',
+          path.basename(containerPath),
+        );
+        const transcript = await transcribeAudioMessage(localPath);
+        deliver(transcript ? `[Voice: ${transcript}]` : `[Voice message] (${containerPath})`);
       });
     });
     this.bot.on('message:audio', (ctx) => {
@@ -395,6 +434,20 @@ export class TelegramChannel implements Channel {
       );
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
+    }
+  }
+
+  async sendPhoto(jid: string, photoUrl: string, caption?: string): Promise<void> {
+    if (!this.bot) {
+      logger.warn('Telegram bot not initialized');
+      return;
+    }
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      await this.bot.api.sendPhoto(numericId, photoUrl, caption ? { caption } : {});
+      logger.info({ jid, caption }, 'Telegram photo sent');
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to send Telegram photo');
     }
   }
 

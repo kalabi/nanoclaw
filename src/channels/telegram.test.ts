@@ -29,6 +29,11 @@ vi.mock('../group-folder.js', () => ({
   resolveGroupFolderPath: vi.fn((folder: string) => `/tmp/test-groups/${folder}`),
 }));
 
+// Mock transcription
+vi.mock('../transcription.js', () => ({
+  transcribeAudioMessage: vi.fn().mockResolvedValue('hello from voice'),
+}));
+
 
 // --- Grammy mock ---
 
@@ -46,6 +51,7 @@ vi.mock('grammy', () => ({
     api = {
       sendMessage: vi.fn().mockResolvedValue(undefined),
       sendChatAction: vi.fn().mockResolvedValue(undefined),
+      sendPhoto: vi.fn().mockResolvedValue(undefined),
       getFile: vi.fn().mockResolvedValue({ file_path: 'photos/file_0.jpg' }),
     };
 
@@ -78,6 +84,7 @@ vi.mock('grammy', () => ({
 
 import fs from 'fs';
 import { TelegramChannel, TelegramChannelOpts } from './telegram.js';
+import { transcribeAudioMessage } from '../transcription.js';
 
 // --- Test helpers ---
 
@@ -777,7 +784,7 @@ describe('TelegramChannel', () => {
       );
     });
 
-    it('downloads voice message', async () => {
+    it('transcribes voice message', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -791,6 +798,29 @@ describe('TelegramChannel', () => {
       await flushPromises();
 
       expect(currentBot().api.getFile).toHaveBeenCalledWith('voice_id');
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: '[Voice: hello from voice]',
+        }),
+      );
+    });
+
+    it('falls back to file path when transcription unavailable', async () => {
+      vi.mocked(transcribeAudioMessage).mockResolvedValueOnce(null);
+
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      currentBot().api.getFile.mockResolvedValueOnce({ file_path: 'voice/file_0.oga' });
+
+      const ctx = createMediaCtx({
+        extra: { voice: { file_id: 'voice_id' } },
+      });
+      await triggerMediaMessage('message:voice', ctx);
+      await flushPromises();
+
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
@@ -985,6 +1015,38 @@ describe('TelegramChannel', () => {
       await channel.sendMessage('tg:100200300', 'No bot');
 
       // No error, no API call
+    });
+  });
+
+  // --- sendPhoto ---
+
+  describe('sendPhoto', () => {
+    it('sends a photo by URL with caption', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await channel.sendPhoto('tg:100200300', 'https://example.com/image.png', 'A cat');
+
+      expect(currentBot().api.sendPhoto).toHaveBeenCalledWith(
+        '100200300',
+        'https://example.com/image.png',
+        { caption: 'A cat' },
+      );
+    });
+
+    it('sends a photo by URL without caption', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await channel.sendPhoto('tg:100200300', 'https://example.com/image.png');
+
+      expect(currentBot().api.sendPhoto).toHaveBeenCalledWith(
+        '100200300',
+        'https://example.com/image.png',
+        {},
+      );
     });
   });
 

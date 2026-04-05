@@ -64,6 +64,7 @@ import {
 import { startSessionCleanup } from './session-cleanup.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { isImageGenerationRequest, generateImage } from './image-router.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -249,6 +250,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
     );
     if (!hasTrigger) return true;
+  }
+
+  // Route image generation requests to DALL-E 3 (bypass container)
+  const imageRequest = missedMessages.find((m) => isImageGenerationRequest(m.content));
+  if (imageRequest) {
+    const imageUrl = await generateImage(imageRequest.content);
+    if (imageUrl) {
+      await channel.sendPhoto?.(chatJid, imageUrl);
+      lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
+      saveState();
+      return true;
+    }
+    // Fall through to Claude if DALL-E fails
   }
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
