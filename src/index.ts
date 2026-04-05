@@ -253,12 +253,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   // Route image generation requests to DALL-E 3 (bypass container)
-  const imageRequest = missedMessages.find((m) => isImageGenerationRequest(m.content));
+  const imageRequest = missedMessages.find((m) =>
+    isImageGenerationRequest(m.content),
+  );
   if (imageRequest) {
     const imageUrl = await generateImage(imageRequest.content);
     if (imageUrl) {
       await channel.sendPhoto?.(chatJid, imageUrl);
-      lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
+      lastAgentTimestamp[chatJid] =
+        missedMessages[missedMessages.length - 1].timestamp;
       saveState();
       return true;
     }
@@ -527,6 +530,26 @@ async function startMessageLoop(): Promise<void> {
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
           const formatted = formatMessages(messagesToSend, TIMEZONE);
+
+          // Route image generation requests to DALL-E 3 before piping or queuing
+          const imageReq = messagesToSend.find((m) =>
+            isImageGenerationRequest(m.content),
+          );
+          if (imageReq) {
+            (async () => {
+              const imageUrl = await generateImage(imageReq.content);
+              if (imageUrl) {
+                await channel.sendPhoto?.(chatJid, imageUrl);
+                lastAgentTimestamp[chatJid] =
+                  messagesToSend[messagesToSend.length - 1].timestamp;
+                saveState();
+              } else {
+                // DALL-E failed — let Claude handle it
+                queue.enqueueMessageCheck(chatJid);
+              }
+            })();
+            continue;
+          }
 
           if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
